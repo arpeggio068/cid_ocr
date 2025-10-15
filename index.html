@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CID OCR (Auto Deskew + Top Region + Tesseract)</title>
+  <title>CID OCR (Auto Rotate + Deskew + OCR)</title>
   <script src="public/js/opencv.js"></script>
   <script src="public/js/tesseract.min.js"></script>
 </head>
 <body>
-<h3>อ่านเลขบัตรประชาชน (รองรับทั้งภาพตรงและเอียง)</h3>
+<h3>อ่านเลขบัตรประชาชน (รองรับภาพทุกแนว)</h3>
 <input type="file" id="fileInput" accept="image/*">
 <pre id="output"></pre>
 <canvas id="cvCanvas" style="display:none;"></canvas>
@@ -27,7 +27,51 @@ function validateThaiID(id){
   return (11-(s%11))%10===d[12];
 }
 
-// ฟังก์ชันตรวจมุมและแก้เอียงอัตโนมัติ
+// 🔄 ฟังก์ชันหมุนภาพอัตโนมัติให้เป็นแนวนอน (0°)
+function autoRotateToLandscape(src){
+  // ใช้ขนาดภาพเป็นตัวบ่งชี้ก่อน (ถ้ากว้าง < สูง แสดงว่าแนวตั้ง)
+  if(src.cols < src.rows){
+    let dst = new cv.Mat();
+    cv.rotate(src, dst, cv.ROTATE_90_CLOCKWISE);
+    console.log("Rotate 90° CW (portrait → landscape)");
+    return dst;
+  }
+
+  // หา contour ที่มีลักษณะคล้ายขอบบัตรเพื่อตรวจว่า กลับหัวไหม
+  let gray = new cv.Mat();
+  cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0);
+  cv.GaussianBlur(gray, gray, new cv.Size(5,5), 0);
+  let edges = new cv.Mat();
+  cv.Canny(gray, edges, 50, 150);
+  let contours = new cv.MatVector();
+  let hierarchy = new cv.Mat();
+  cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+  // เลือก contour ใหญ่สุดเป็นตัวแทนบัตร
+  let maxArea = 0;
+  let maxRect = null;
+  for(let i=0; i<contours.size(); i++){
+    let cnt = contours.get(i);
+    let rect = cv.boundingRect(cnt);
+    let area = rect.width * rect.height;
+    if(area > maxArea){ maxArea = area; maxRect = rect; }
+    cnt.delete();
+  }
+
+  // ตรวจว่าขอบบัตรอยู่ล่างหรือบน (เช่นกลับหัว)
+  if(maxRect && maxRect.y > src.rows/2){
+    let dst = new cv.Mat();
+    cv.rotate(src, dst, cv.ROTATE_180);
+    console.log("Rotate 180° (upside-down)");
+    gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+    return dst;
+  }
+
+  gray.delete(); edges.delete(); contours.delete(); hierarchy.delete();
+  return src.clone();
+}
+
+// ฟังก์ชันตรวจมุมและแก้เอียง
 function autoDeskew(srcGray){
   let bw=new cv.Mat();
   cv.threshold(srcGray,bw,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
@@ -44,7 +88,6 @@ function autoDeskew(srcGray){
     c.delete();
   }
 
-  // ถ้าไม่มี contour เลย → ไม่หมุน
   if(pts.length===0){
     bw.delete();contours.delete();hier.delete();
     return {mat:srcGray.clone(), angle:0};
@@ -54,23 +97,20 @@ function autoDeskew(srcGray){
   const rect=cv.minAreaRect(mat);
   let angle=rect.angle;
   if(angle < -45) angle += 90;
-  let absAngle=Math.abs(angle);
-
-  // ⚠️ ป้องกันมุมเพี้ยน 90° สำหรับภาพแนวกว้าง
+  const absAngle=Math.abs(angle);
   const aspect = srcGray.cols / srcGray.rows;
+
   if ((absAngle > 80 && absAngle < 100) && aspect > 1.2) {
     console.log("Skip false 90° rotation for landscape image");
     bw.delete();contours.delete();hier.delete();mat.delete();
     return {mat:srcGray.clone(), angle:0};
   }
 
-  // ถ้าเอียงน้อยกว่า 1.5° → ไม่ต้องหมุน
   if(absAngle < 1.5){
     bw.delete();contours.delete();hier.delete();mat.delete();
     return {mat:srcGray.clone(), angle:0};
   }
 
-  // หมุนภาพตามมุมจริง
   const center=new cv.Point(srcGray.cols/2,srcGray.rows/2);
   const M=cv.getRotationMatrix2D(center,angle,1);
   let dst=new cv.Mat();
@@ -81,9 +121,8 @@ function autoDeskew(srcGray){
   return {mat:dst, angle:angle};
 }
 
-
 fileInput.addEventListener('change',async e=>{
-  output.textContent= ''
+  output.textContent='กำลังอ่านข้อมูลภาพ โปรดรอ...';
   const f=e.target.files[0]; if(!f) return;
   const img=new Image(); img.src=URL.createObjectURL(f);
   img.onload=async()=>{
@@ -91,37 +130,39 @@ fileInput.addEventListener('change',async e=>{
     ctx.drawImage(img,0,0);
 
     let src=cv.imread(canvas);
+
+    // ✅ หมุนภาพให้อยู่ในแนวนอนก่อน
+    let rotated = autoRotateToLandscape(src);
+
+    // แปลงเป็น grayscale
     let gray=new cv.Mat();
-    cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY,0);
+    cv.cvtColor(rotated,gray,cv.COLOR_RGBA2GRAY,0);
 
     // ลด noise ก่อนตรวจมุม
     cv.GaussianBlur(gray,gray,new cv.Size(3,3),0);
 
-    // ตรวจมุมเอียงและแก้ถ้าจำเป็น
+    // ✅ ตรวจมุมเอียงและแก้ถ้าจำเป็น
     const {mat:deskewed, angle}=autoDeskew(gray);
     console.log('Detected angle:', angle.toFixed(2));
 
-    // ใช้เฉพาะส่วนบนของภาพ (เช่น 60%)
+    // ✅ ใช้เฉพาะส่วนบนของภาพ
     const TOP_RATIO=0.65;
     const h=Math.floor(deskewed.rows*TOP_RATIO);
     const roi=new cv.Rect(0,0,deskewed.cols,h);
     let top=deskewed.roi(roi);
 
-    // Normalize contrast + threshold (OTSU)
-    let norm=new cv.Mat();
-    cv.normalize(top,norm,0,255,cv.NORM_MINMAX);
+    // ✅ Threshold + morphology
     let bin=new cv.Mat();
-    cv.threshold(norm,bin,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
-
-    // Morph close เบา ๆ
+    cv.adaptiveThreshold(top,bin,255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,41,10);
     let kernel=cv.Mat.ones(2,2,cv.CV_8U);
     cv.morphologyEx(bin,bin,cv.MORPH_CLOSE,kernel);
 
-    // แสดงภาพที่เตรียมส่งเข้า OCR
+    // แสดงภาพหลังประมวลผล
     canvas.width=bin.cols; canvas.height=bin.rows;
     cv.imshow(canvas,bin);
 
-    // OCR เฉพาะตัวเลข
+    // ✅ OCR เฉพาะตัวเลข
     const {data}=await Tesseract.recognize(
       canvas,'eng',
       {logger:m=>console.log(m),
@@ -142,12 +183,67 @@ fileInput.addEventListener('change',async e=>{
         `✅ ${type} ถูกต้องตาม checksum: ${cid} (มุมเอียง ${angle.toFixed(2)}°)`:
         `⚠️ พบเลข ${cid} แต่ไม่ผ่าน checksum (มุม ${angle.toFixed(2)}°)`;
     }else{
-      output.textContent=`❌ ไม่พบเลข 13 หลัก (มุม ${angle.toFixed(2)}°)`;
+      // ❌ ไม่พบเลข 13 หลัก → ลองหมุนภาพอีก 180° แล้ว OCR ซ้ำ
+        console.log("No 13-digit found, try rotate 180° and OCR again...");
+        let temp = new cv.Mat();
+        cv.rotate(rotated, temp, cv.ROTATE_180);
+
+        // แปลงภาพใหม่เป็น gray
+        let g2 = new cv.Mat();
+        cv.cvtColor(temp, g2, cv.COLOR_RGBA2GRAY, 0);
+
+        // Crop เฉพาะส่วนบนของภาพใหม่
+        const h2 = Math.floor(g2.rows * 0.65);
+        const roi2 = new cv.Rect(0, 0, g2.cols, h2);
+        let top2 = g2.roi(roi2);
+
+        // Threshold + morphology
+        let bin2 = new cv.Mat();
+        cv.adaptiveThreshold(top2, bin2, 255,
+            cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 41, 10);
+        let kernel2 = cv.Mat.ones(2, 2, cv.CV_8U);
+        cv.morphologyEx(bin2, bin2, cv.MORPH_CLOSE, kernel2);
+
+        // ✅ ต้องวาด bin2 ลง canvas ก่อน OCR
+        canvas.width = bin2.cols;
+        canvas.height = bin2.rows;
+        cv.imshow(canvas, bin2);
+
+        // 👁️ OCR ซ้ำอีกรอบ
+        const { data: data2 } = await Tesseract.recognize(
+            canvas,
+            'eng',
+            {
+                logger: m => console.log(m),
+                tessedit_char_whitelist: '0123456789 ',
+                tessedit_pageseg_mode: 7
+            }
+        );
+
+        const txt2 = data2.text.replace(/\s+/g, '');
+        const m2 = txt2.match(/\d{13}/);
+
+        if (m2) {
+            const cid2 = m2[0];
+            const ok2 = validateThaiID(cid2);
+            const first2 = cid2.charAt(0);
+            let type2 = 'เลขประจำตัวประชาชน (สัญชาติไทย)';
+            if(['0','6','7','8','9'].includes(first2))
+            type2='เลขบุคคลต่างด้าว / ไม่มีสัญชาติไทย';
+            output.textContent = ok2
+            ? `✅ ${type2} ถูกต้องตาม checksum: ${cid2} (หมุน 180° แล้วอ่านได้)`
+            : `⚠️ พบเลข ${cid2} แต่ไม่ผ่าน checksum (หมุน 180° แล้วอ่านได้)`;
+        } else {
+            output.textContent = `❌ ไม่พบเลข 13 หลัก แม้หมุน 180° แล้ว`;
+        }
+
+        // cleanup รอบสอง
+        temp.delete(); g2.delete(); top2.delete(); bin2.delete(); kernel2.delete();
     }
 
     // ล้างหน่วยความจำ
-    src.delete();gray.delete();deskewed.delete();
-    top.delete();norm.delete();bin.delete();kernel.delete();
+    src.delete(); rotated.delete(); gray.delete(); deskewed.delete();
+    top.delete(); bin.delete(); kernel.delete();
   };
 });
 </script>
