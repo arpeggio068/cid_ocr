@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CID OCR (Multi-Resolution Skip Rotation)</title>
+<title>CID OCR (Top Zone + Multi-Resolution Skip Rotation)</title>
 <script src="public/js/opencv.js"></script>
 <script src="public/js/tesseract.min.js"></script>
 <style>
@@ -14,7 +14,7 @@
 </style>
 </head>
 <body>
-<h3>อ่านเลขบัตรประชาชน (Test 3 Resolution: 800 / 960 / 1280 + Skip Rotation)</h3>
+<h3>อ่านเลขบัตรประชาชน (Top Zone Priority + Multi-Resolution Skip Rotation)</h3>
 <input type="file" id="fileInput" accept="image/*"><br>
 <pre id="output"></pre>
 <div id="canvases">
@@ -58,7 +58,7 @@ function autoFixThaiIDByChecksum(id){
   return null;
 }
 
-// 🧠 วิเคราะห์แสงภาพและเลือกค่าที่เหมาะสมโดยอัตโนมัติ
+// 🧠 วิเคราะห์แสงภาพ
 function autoContrastLevel(grayMat){
   const meanScalar = cv.mean(grayMat);
   const brightness = meanScalar[0];
@@ -68,37 +68,12 @@ function autoContrastLevel(grayMat){
   return { claheClip, sharpWeight, blurWeight, normMin, normMax, brightness };
 }
 
-// 🧩 ประมวลผลภาพ 1 มุม
-async function processImage(mat, angle, maxW){
-  let gray = new cv.Mat();
-  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
-
-  const { claheClip, sharpWeight, blurWeight, normMin, normMax, brightness } = autoContrastLevel(gray);
-
-  const clahe = new cv.CLAHE(claheClip, new cv.Size(8, 8));
-  const cl = new cv.Mat();
-  clahe.apply(gray, cl);
-
-  const blur = new cv.Mat();
-  cv.GaussianBlur(cl, blur, new cv.Size(0, 0), 1.0);
-  const sharp = new cv.Mat();
-  cv.addWeighted(cl, sharpWeight, blur, blurWeight, 0, sharp);
-
-  cv.normalize(sharp, sharp, normMin, normMax, cv.NORM_MINMAX);
-
-  const bin = new cv.Mat();
-  cv.adaptiveThreshold(sharp, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 35, 10);
-
-  const up = new cv.Mat();
-  cv.resize(bin, up, new cv.Size(0,0), 1.5, 1.5, cv.INTER_CUBIC);
-
-  c2.width = up.cols; c2.height = up.rows;
-  cv.imshow(c2, up);
-
+// 🔍 ฟังก์ชัน OCR (สำหรับ full หรือ zone)
+async function runOCR(mat, maxW, angle, label="full"){
   const temp = document.createElement("canvas");
-  temp.width = up.cols; temp.height = up.rows;
-  cv.imshow(temp, up);
-  await new Promise(r=>setTimeout(r, 30));
+  temp.width = mat.cols; temp.height = mat.rows;
+  cv.imshow(temp, mat);
+  await new Promise(r=>setTimeout(r, 20));
 
   let cidResult = null;
   try {
@@ -116,13 +91,59 @@ async function processImage(mat, angle, maxW){
       }
       if (validateThaiID(cid)) cidResult = cid;
     }
-    return { maxW, angle, brightness: brightness.toFixed(1), cid: cidResult };
+    return { cid: cidResult, raw: data.text, zone: label };
   } catch (e) {
     console.error(e);
-    return { maxW, angle, brightness: brightness.toFixed(1), cid: null };
-  } finally {
-    gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete(); bin.delete(); up.delete();
+    return { cid: null, raw: "error", zone: label };
   }
+}
+
+// 🧩 ประมวลผลภาพ (Top Zone ก่อน Full)
+async function processImage(mat, angle, maxW){
+  let gray = new cv.Mat();
+  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+  const { claheClip, sharpWeight, blurWeight, normMin, normMax, brightness } = autoContrastLevel(gray);
+
+  const clahe = new cv.CLAHE(claheClip, new cv.Size(8, 8));
+  const cl = new cv.Mat();
+  clahe.apply(gray, cl);
+
+  const blur = new cv.Mat();
+  cv.GaussianBlur(cl, blur, new cv.Size(0, 0), 1.0);
+  const sharp = new cv.Mat();
+  cv.addWeighted(cl, sharpWeight, blur, blurWeight, 0, sharp);
+  cv.normalize(sharp, sharp, normMin, normMax, cv.NORM_MINMAX);
+
+  const bin = new cv.Mat();
+  cv.adaptiveThreshold(sharp, bin, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+                       cv.THRESH_BINARY, 35, 10);
+
+  const up = new cv.Mat();
+  cv.resize(bin, up, new cv.Size(0,0), 1.5, 1.5, cv.INTER_CUBIC);
+  c2.width = up.cols; c2.height = up.rows;
+  cv.imshow(c2, up);
+
+  // ✅ Step 1: OCR เฉพาะโซนบนสุด (เช่น 0-40% ของภาพ)
+  const zoneHeight = Math.floor(up.rows * 0.4);
+  const zoneRect = new cv.Rect(0, 0, up.cols, zoneHeight);
+  const zoneMat = up.roi(zoneRect);
+
+  let res = await runOCR(zoneMat, maxW, angle, "top-zone");
+  output.textContent += `🔹 Top-Zone OCR (0-40%) Brightness=${brightness.toFixed(1)} | CID=${res.cid || "ไม่พบ"}\n`;
+  zoneMat.delete();
+
+  if(res.cid) {
+    // ถ้าเจอใน zone → ข้าม OCR ทั้งภาพ
+    gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete(); bin.delete(); up.delete();
+    return { ...res, maxW, angle, brightness };
+  }
+
+  // ✅ Step 2: OCR ทั้งภาพ (ถ้ายังไม่เจอ)
+  res = await runOCR(up, maxW, angle, "full");
+  output.textContent += `🔹 Full Image OCR Brightness=${brightness.toFixed(1)} | CID=${res.cid || "ไม่พบ"}\n`;
+
+  gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete(); bin.delete(); up.delete();
+  return { ...res, maxW, angle, brightness };
 }
 
 // 🧠 เริ่มทำงาน
@@ -149,7 +170,7 @@ fileInput.addEventListener("change", async e=>{
       let foundForThisRes = false;
 
       for (let a of angles) {
-        if(foundForThisRes) break;  // ✅ ถ้าเจอแล้ว ไม่ต้องหมุนต่อ
+        if(foundForThisRes) break;
 
         let rot=new cv.Mat();
         switch(a){
@@ -162,13 +183,10 @@ fileInput.addEventListener("change", async e=>{
         const res = await processImage(rot,a,maxW);
         rot.delete();
 
-        if(res){
-          results.push(res);
-          output.textContent += `มุม ${res.angle}° | Brightness=${res.brightness} | CID=${res.cid || "ไม่พบ"}\n`;
-          if(res.cid && res.cid.length === 13){
-            foundForThisRes = true; // ✅ ข้ามไป maxW ถัดไป
-            output.textContent += `➡️ พบเลขครบ 13 หลักที่ maxW=${maxW} → ข้ามไปขนาดถัดไป\n`;
-          }
+        results.push(res);
+        if(res.cid && res.cid.length===13){
+          foundForThisRes = true;
+          output.textContent += `✅ พบเลขครบ 13 หลักที่ maxW=${maxW} (มุม ${res.angle}° จาก ${res.zone}) → ข้ามไปขนาดถัดไป\n`;
         }
       }
 
@@ -177,7 +195,7 @@ fileInput.addEventListener("change", async e=>{
 
     const found = results.filter(r=>r.cid);
     if(found.length){
-      output.textContent += `\n✅ พบเลข ${found[0].cid} (จาก maxW=${found[0].maxW}, มุม ${found[0].angle}°)\n`;
+      output.textContent += `\n✅ พบเลข ${found[0].cid} (จาก maxW=${found[0].maxW}, zone=${found[0].zone}, มุม ${found[0].angle}°)\n`;
     }else{
       output.textContent += `\n❌ ไม่พบเลขบัตรในทุกมุม`;
     }
