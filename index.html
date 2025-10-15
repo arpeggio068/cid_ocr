@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CID OCR (Auto Deskew + Top Region + Tesseract)</title>
+  <script src="public/js/opencv.js"></script>
+  <script src="public/js/tesseract.min.js"></script>
+</head>
+<body>
+<h3>อ่านเลขบัตรประชาชน (รองรับทั้งภาพตรงและเอียง)</h3>
+<input type="file" id="fileInput" accept="image/*">
+<pre id="output"></pre>
+<canvas id="cvCanvas" style="display:none;"></canvas>
+
+<script>
+const fileInput = document.getElementById('fileInput');
+const canvas = document.getElementById('cvCanvas');
+const ctx = canvas.getContext('2d');
+const output = document.getElementById('output');
+
+// ตรวจสอบ checksum 13 หลัก
+function validateThaiID(id){
+  if(!/^\d{13}$/.test(id)) return false;
+  const d=id.split('').map(Number);
+  let s=0;for(let i=0;i<12;i++)s+=d[i]*(13-i);
+  return (11-(s%11))%10===d[12];
+}
+
+// ฟังก์ชันตรวจมุมและแก้เอียงอัตโนมัติ
+function autoDeskew(srcGray){
+  let bw=new cv.Mat();
+  cv.threshold(srcGray,bw,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+
+  let contours=new cv.MatVector(),hier=new cv.Mat();
+  cv.findContours(bw,contours,hier,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
+
+  let pts=[];
+  for(let i=0;i<contours.size();i++){
+    const c=contours.get(i);
+    for(let j=0;j<c.data32S.length/2;j++){
+      pts.push(new cv.Point(c.data32S[j*2],c.data32S[j*2+1]));
+    }
+    c.delete();
+  }
+
+  // ถ้าไม่มี contour เลย → ไม่หมุน
+  if(pts.length===0){
+    bw.delete();contours.delete();hier.delete();
+    return {mat:srcGray.clone(), angle:0};
+  }
+
+  const mat=cv.matFromArray(pts.length,1,cv.CV_32SC2,pts.flatMap(p=>[p.x,p.y]));
+  const rect=cv.minAreaRect(mat);
+  let angle=rect.angle;
+  if(angle < -45) angle += 90;
+  let absAngle=Math.abs(angle);
+
+  // ⚠️ ป้องกันมุมเพี้ยน 90° สำหรับภาพแนวกว้าง
+  const aspect = srcGray.cols / srcGray.rows;
+  if ((absAngle > 80 && absAngle < 100) && aspect > 1.2) {
+    console.log("Skip false 90° rotation for landscape image");
+    bw.delete();contours.delete();hier.delete();mat.delete();
+    return {mat:srcGray.clone(), angle:0};
+  }
+
+  // ถ้าเอียงน้อยกว่า 1.5° → ไม่ต้องหมุน
+  if(absAngle < 1.5){
+    bw.delete();contours.delete();hier.delete();mat.delete();
+    return {mat:srcGray.clone(), angle:0};
+  }
+
+  // หมุนภาพตามมุมจริง
+  const center=new cv.Point(srcGray.cols/2,srcGray.rows/2);
+  const M=cv.getRotationMatrix2D(center,angle,1);
+  let dst=new cv.Mat();
+  cv.warpAffine(srcGray,dst,M,new cv.Size(srcGray.cols,srcGray.rows),
+                cv.INTER_LINEAR,cv.BORDER_REPLICATE);
+
+  bw.delete();contours.delete();hier.delete();mat.delete();M.delete();
+  return {mat:dst, angle:angle};
+}
+
+
+fileInput.addEventListener('change',async e=>{
+  output.textContent= ''
+  const f=e.target.files[0]; if(!f) return;
+  const img=new Image(); img.src=URL.createObjectURL(f);
+  img.onload=async()=>{
+    canvas.width=img.width; canvas.height=img.height;
+    ctx.drawImage(img,0,0);
+
+    let src=cv.imread(canvas);
+    let gray=new cv.Mat();
+    cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY,0);
+
+    // ลด noise ก่อนตรวจมุม
+    cv.GaussianBlur(gray,gray,new cv.Size(3,3),0);
+
+    // ตรวจมุมเอียงและแก้ถ้าจำเป็น
+    const {mat:deskewed, angle}=autoDeskew(gray);
+    console.log('Detected angle:', angle.toFixed(2));
+
+    // ใช้เฉพาะส่วนบนของภาพ (เช่น 60%)
+    const TOP_RATIO=0.65;
+    const h=Math.floor(deskewed.rows*TOP_RATIO);
+    const roi=new cv.Rect(0,0,deskewed.cols,h);
+    let top=deskewed.roi(roi);
+
+    // Normalize contrast + threshold (OTSU)
+    let norm=new cv.Mat();
+    cv.normalize(top,norm,0,255,cv.NORM_MINMAX);
+    let bin=new cv.Mat();
+    cv.threshold(norm,bin,0,255,cv.THRESH_BINARY+cv.THRESH_OTSU);
+
+    // Morph close เบา ๆ
+    let kernel=cv.Mat.ones(2,2,cv.CV_8U);
+    cv.morphologyEx(bin,bin,cv.MORPH_CLOSE,kernel);
+
+    // แสดงภาพที่เตรียมส่งเข้า OCR
+    canvas.width=bin.cols; canvas.height=bin.rows;
+    cv.imshow(canvas,bin);
+
+    // OCR เฉพาะตัวเลข
+    const {data}=await Tesseract.recognize(
+      canvas,'eng',
+      {logger:m=>console.log(m),
+       tessedit_char_whitelist:'0123456789 ',
+       tessedit_pageseg_mode:7}
+    );
+
+    const txt=data.text.replace(/\s+/g,'');
+    const m=txt.match(/\d{13}/);
+    if(m){
+      const cid=m[0];
+      const ok=validateThaiID(cid);
+      const first=cid.charAt(0);
+      let type='เลขประจำตัวประชาชน (สัญชาติไทย)';
+      if(['0','6','7','8','9'].includes(first))
+        type='เลขบุคคลต่างด้าว / ไม่มีสัญชาติไทย';
+      output.textContent= ok ?
+        `✅ ${type} ถูกต้องตาม checksum: ${cid} (มุมเอียง ${angle.toFixed(2)}°)`:
+        `⚠️ พบเลข ${cid} แต่ไม่ผ่าน checksum (มุม ${angle.toFixed(2)}°)`;
+    }else{
+      output.textContent=`❌ ไม่พบเลข 13 หลัก (มุม ${angle.toFixed(2)}°)`;
+    }
+
+    // ล้างหน่วยความจำ
+    src.delete();gray.delete();deskewed.delete();
+    top.delete();norm.delete();bin.delete();kernel.delete();
+  };
+});
+</script>
+</body>
+</html>
