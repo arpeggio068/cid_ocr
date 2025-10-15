@@ -11,11 +11,22 @@
   canvas { margin: 5px; border: 1px solid #ccc; max-width: 45%; height: auto; }
   #canvases { display: flex; flex-wrap: wrap; justify-content: start; align-items: start; }
   .label { text-align: center; font-size: 14px; margin: 4px 0; }
+  #btns { margin:10px 0; }
+  button { margin-right:8px; padding:6px 12px; background:#007bff; color:#fff; border:none; border-radius:5px; cursor:pointer; }
+  button:hover { background:#0056b3; }
 </style>
 </head>
 <body>
 <h3>อ่านเลขบัตรประชาชน (Top Zone Priority + Multi-Resolution Skip Rotation)</h3>
+
 <input type="file" id="fileInput" accept="image/*"><br>
+
+<div id="btns">
+  <button id="rotateLeft">↩️ หมุนซ้าย</button>
+  <button id="rotateRight">↪️ หมุนขวา</button>
+  <button id="startOCR">🔍 เริ่ม OCR</button>
+</div>
+
 <pre id="output"></pre>
 <div id="canvases">
   <div>
@@ -33,6 +44,8 @@ const fileInput = document.getElementById("fileInput");
 const output = document.getElementById("output");
 const c1 = document.getElementById("cvCanvas1");
 const c2 = document.getElementById("cvCanvas2");
+const startBtn = document.getElementById("startOCR");
+let srcMat = null;
 
 // ✅ ตรวจ checksum
 function validateThaiID(id){
@@ -68,7 +81,7 @@ function autoContrastLevel(grayMat){
   return { claheClip, sharpWeight, blurWeight, normMin, normMax, brightness };
 }
 
-// 🔍 ฟังก์ชัน OCR (สำหรับ full หรือ zone)
+// 🔍 OCR Function
 async function runOCR(mat, maxW, angle, label="full"){
   const temp = document.createElement("canvas");
   temp.width = mat.cols; temp.height = mat.rows;
@@ -98,7 +111,7 @@ async function runOCR(mat, maxW, angle, label="full"){
   }
 }
 
-// 🧩 ประมวลผลภาพ (Top Zone ก่อน Full)
+// 🧩 Process per rotation
 async function processImage(mat, angle, maxW){
   let gray = new cv.Mat();
   cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
@@ -123,7 +136,7 @@ async function processImage(mat, angle, maxW){
   c2.width = up.cols; c2.height = up.rows;
   cv.imshow(c2, up);
 
-  // ✅ Step 1: OCR เฉพาะโซนบนสุด (เช่น 0-40% ของภาพ)
+  // Step 1: Top zone first
   const zoneHeight = Math.floor(up.rows * 0.4);
   const zoneRect = new cv.Rect(0, 0, up.cols, zoneHeight);
   const zoneMat = up.roi(zoneRect);
@@ -133,12 +146,11 @@ async function processImage(mat, angle, maxW){
   zoneMat.delete();
 
   if(res.cid) {
-    // ถ้าเจอใน zone → ข้าม OCR ทั้งภาพ
     gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete(); bin.delete(); up.delete();
     return { ...res, maxW, angle, brightness };
   }
 
-  // ✅ Step 2: OCR ทั้งภาพ (ถ้ายังไม่เจอ)
+  // Step 2: Full image fallback
   res = await runOCR(up, maxW, angle, "full");
   output.textContent += `🔹 Full Image OCR Brightness=${brightness.toFixed(1)} | CID=${res.cid || "ไม่พบ"}\n`;
 
@@ -146,61 +158,106 @@ async function processImage(mat, angle, maxW){
   return { ...res, maxW, angle, brightness };
 }
 
-// 🧠 เริ่มทำงาน
-fileInput.addEventListener("change", async e=>{
-  output.textContent="⏳ กำลังอ่าน...";
-  const f=e.target.files[0];
+// ✅ เมื่อเลือกไฟล์ → แสดงภาพเฉย ๆ
+fileInput.addEventListener("change", e=>{
+  const f = e.target.files[0];
   if(!f) return;
-  const img=new Image();
-  img.src=URL.createObjectURL(f);
-  img.onload=async()=>{
-    const resolutions = [800, 960, 1280];
-    const aspect = img.width / img.height;
-    const angles = (aspect>1.2)? [0] : [0,270,180,90];
-    let results = [];
 
-    for (const maxW of resolutions) {
-      output.textContent += `\n=== 🔍 ทดลองขนาด maxW = ${maxW} ===\n`;
-      const scale = img.width > maxW ? maxW / img.width : 1;
-      c1.width = img.width * scale; c1.height = img.height * scale;
-      const ctx = c1.getContext("2d");
-      ctx.drawImage(img, 0, 0, c1.width, c1.height);
-      let src = cv.imread(c1);
+  // 🧩 ตรวจขนาดไฟล์ก่อนโหลด
+  const fileSizeMB = f.size / 1024 / 1024;
+  const img = new Image();
+  img.src = URL.createObjectURL(f);
 
-      let foundForThisRes = false;
-
-      for (let a of angles) {
-        if(foundForThisRes) break;
-
-        let rot=new cv.Mat();
-        switch(a){
-          case 0: rot=src.clone();break;
-          case 90: cv.rotate(src,rot,cv.ROTATE_90_CLOCKWISE);break;
-          case 180: cv.rotate(src,rot,cv.ROTATE_180);break;
-          case 270: cv.rotate(src,rot,cv.ROTATE_90_COUNTERCLOCKWISE);break;
-        }
-
-        const res = await processImage(rot,a,maxW);
-        rot.delete();
-
-        results.push(res);
-        if(res.cid && res.cid.length===13){
-          foundForThisRes = true;
-          output.textContent += `✅ พบเลขครบ 13 หลักที่ maxW=${maxW} (มุม ${res.angle}° จาก ${res.zone}) → ข้ามไปขนาดถัดไป\n`;
-        }
-      }
-
-      src.delete();
+  img.onload = ()=>{
+    // ถ้าไฟล์ใหญ่กว่า 2MB → จำกัด maxW = 1280
+    // ถ้าไฟล์เล็กหรือเท่ากับ 2MB → ใช้ขนาดจริง (ไม่ย่อ)
+    let maxW = img.width;
+    if (fileSizeMB > 2) {
+      maxW = 1280;
+      output.textContent = `⚠️ ขนาดไฟล์ ${fileSizeMB.toFixed(2)} MB > 2MB → ย่อภาพเหลือ maxWidth = 1280\n`;
+    } else {
+      output.textContent = `📦 ขนาดไฟล์ ${fileSizeMB.toFixed(2)} MB ≤ 2MB → ใช้ขนาดต้นฉบับ\n`;
     }
 
-    const found = results.filter(r=>r.cid);
-    if(found.length){
-      output.textContent += `\n✅ พบเลข ${found[0].cid} (จาก maxW=${found[0].maxW}, zone=${found[0].zone}, มุม ${found[0].angle}°)\n`;
-    }else{
-      output.textContent += `\n❌ ไม่พบเลขบัตรในทุกมุม`;
-    }
+    const scale = img.width > maxW ? maxW / img.width : 1;
+    c1.width = img.width * scale;
+    c1.height = img.height * scale;
+    const ctx = c1.getContext("2d");
+    ctx.drawImage(img, 0, 0, c1.width, c1.height);
+
+    if(srcMat) srcMat.delete();
+    srcMat = cv.imread(c1);
+
+    output.textContent += "📸 โหลดภาพเรียบร้อยแล้ว — สามารถหมุนได้ จากนั้นกด 'เริ่ม OCR'";
   };
 });
+
+
+// ✅ ปุ่มหมุน
+document.getElementById("rotateLeft").onclick = ()=>rotateCanvas(-90);
+document.getElementById("rotateRight").onclick = ()=>rotateCanvas(90);
+
+function rotateCanvas(deg){
+  if(!srcMat){ alert("กรุณาเลือกรูปก่อน"); return; }
+  const rot = new cv.Mat();
+  if(deg===90) cv.rotate(srcMat,rot,cv.ROTATE_90_CLOCKWISE);
+  else if(deg===-90) cv.rotate(srcMat,rot,cv.ROTATE_90_COUNTERCLOCKWISE);
+  srcMat.delete();
+  srcMat=rot;
+  cv.imshow(c1,srcMat);
+  output.textContent=`หมุนภาพ ${deg>0?"ขวา":"ซ้าย"} 90°`;
+}
+
+// ✅ ปุ่มเริ่ม OCR
+startBtn.addEventListener("click", runMainOCR);
+
+async function runMainOCR(){
+  if(!srcMat){ output.textContent="❌ ยังไม่มีภาพ"; return; }
+  output.textContent="⏳ เริ่ม OCR ...";
+
+  const resolutions = [800, 960, 1280];
+  const aspect = srcMat.cols / srcMat.rows;
+  const angles = (aspect>1.2)? [0] : [0,270,180,90];
+  let results = [];
+
+  for (const maxW of resolutions) {
+    output.textContent += `\n=== 🔍 ทดลองขนาด maxW = ${maxW} ===\n`;
+    const scale = srcMat.cols > maxW ? maxW / srcMat.cols : 1;
+    const resized = new cv.Mat();
+    cv.resize(srcMat, resized, new cv.Size(0,0), scale, scale, cv.INTER_AREA);
+
+    let foundForThisRes = false;
+
+    for (let a of angles) {
+      if(foundForThisRes) break;
+
+      let rot = new cv.Mat();
+      switch(a){
+        case 0: rot=resized.clone();break;
+        case 90: cv.rotate(resized,rot,cv.ROTATE_90_CLOCKWISE);break;
+        case 180: cv.rotate(resized,rot,cv.ROTATE_180);break;
+        case 270: cv.rotate(resized,rot,cv.ROTATE_90_COUNTERCLOCKWISE);break;
+      }
+
+      const res = await processImage(rot,a,maxW);
+      rot.delete();
+      results.push(res);
+
+      if(res.cid && res.cid.length===13){
+        foundForThisRes = true;
+        output.textContent += `✅ พบเลขครบ 13 หลักที่ maxW=${maxW} (มุม ${res.angle}° จาก ${res.zone}) → ข้ามไปขนาดถัดไป\n`;
+      }
+    }
+    resized.delete();
+  }
+
+  const found = results.filter(r=>r.cid);
+  if(found.length){
+    output.textContent += `\n✅ พบเลข ${found[0].cid} (จาก maxW=${found[0].maxW}, zone=${found[0].zone}, มุม ${found[0].angle}°)\n`;
+  }else{
+    output.textContent += `\n❌ ไม่พบเลขบัตรในทุกมุม`;
+  }
+}
 </script>
 </body>
 </html>
