@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CID OCR (Center Crop + Multi-Resolution Skip Rotation)</title>
+<title>CID OCR (Camera Capture + Center Crop + Manual OCR)</title>
 <script src="public/js/opencv.js"></script>
 <script src="public/js/tesseract.min.js"></script>
 <style>
@@ -19,11 +19,13 @@
 </style>
 </head>
 <body>
-<h3>อ่านเลขบัตรประชาชน (Center Crop + Multi-Resolution Skip Rotation)</h3>
+<h3>📸 อ่านเลขบัตรประชาชน (กล้องถ่ายภาพ + Center Crop + Manual OCR)</h3>
 
-<input type="file" id="fileInput" accept="image/*"><br>
+<!-- ✅ เปิดกล้องโดยตรง -->
+<input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none">
 
 <div id="btns">
+  <button id="takePhoto">📷 ถ่ายใหม่</button>
   <label for="cropSelect">เลือกระดับการตัดขอบ (เหลือพื้นที่ตรงกลาง): </label>
   <select id="cropSelect">
     <option value="100">100% (เต็มภาพ)</option>
@@ -32,15 +34,15 @@
     <option value="80">80%</option>
   </select>
   <button id="rotateLeft">↩️ หมุนซ้าย</button>
-  <button id="rotateRight">↪️ หมุนขวา</button>
   <button id="startOCR">🔍 เริ่ม OCR</button>
 </div>
 
 <pre id="output"></pre>
+
 <div id="canvases">
   <div>
     <canvas id="cvCanvas1"></canvas>
-    <div class="label">ต้นฉบับ</div>
+    <div class="label">ภาพจากกล้อง</div>
   </div>
   <div>
     <canvas id="cvCanvas2"></canvas>
@@ -50,19 +52,21 @@
 
 <script>
 const fileInput = document.getElementById("fileInput");
+const takePhotoBtn = document.getElementById("takePhoto");
 const output = document.getElementById("output");
 const c1 = document.getElementById("cvCanvas1");
 const c2 = document.getElementById("cvCanvas2");
 const startBtn = document.getElementById("startOCR");
 const cropSelect = document.getElementById("cropSelect");
+const rotateLeftBtn = document.getElementById("rotateLeft");
 
 let srcMat = null;
-let cropPercent = 0.85; // ✅ ค่าเริ่มต้น 85%
+let cropPercent = 0.9; // เริ่มต้น 90%
 
 // ✅ ตรวจ checksum
 function validateThaiID(id){
   if(!/^\d{13}$/.test(id)) return false;
-  const d = id.split('').map(Number);
+  const d=id.split('').map(Number);
   let s=0; for(let i=0;i<12;i++) s+=d[i]*(13-i);
   return (11-(s%11))%10===d[12];
 }
@@ -85,126 +89,131 @@ function autoFixThaiIDByChecksum(id){
 
 // 🧠 วิเคราะห์แสงภาพ
 function autoContrastLevel(grayMat){
-  const meanScalar = cv.mean(grayMat);
-  const brightness = meanScalar[0];
-  let claheClip = 1.5, sharpWeight = 1.2, blurWeight = -0.2, normMin = 30, normMax = 230;
-  if (brightness < 80) { claheClip = 3.0; sharpWeight = 1.4; blurWeight = -0.4; normMin = 20; normMax = 250; }
-  else if (brightness > 150) { claheClip = 1.0; sharpWeight = 1.1; blurWeight = -0.1; normMin = 40; normMax = 210; }
-  return { claheClip, sharpWeight, blurWeight, normMin, normMax, brightness };
+  const meanScalar=cv.mean(grayMat);
+  const brightness=meanScalar[0];
+  let claheClip=1.5,sharpWeight=1.2,blurWeight=-0.2,normMin=30,normMax=230;
+  if(brightness<80){claheClip=3.0;sharpWeight=1.4;blurWeight=-0.4;normMin=20;normMax=250;}
+  else if(brightness>150){claheClip=1.0;sharpWeight=1.1;blurWeight=-0.1;normMin=40;normMax=210;}
+  return{claheClip,sharpWeight,blurWeight,normMin,normMax,brightness};
 }
 
 // 🟥 วาดเส้น crop
 function drawCropGuides(){
   if(!srcMat) return;
-  const ctx = c1.getContext("2d");
+  const ctx=c1.getContext("2d");
   ctx.clearRect(0,0,c1.width,c1.height);
   cv.imshow(c1,srcMat);
-
-  const remain = cropPercent;
-  const cut = (1 - remain) / 2;
-  const y1 = Math.floor(c1.height * cut);
-  const y2 = Math.floor(c1.height * (1 - cut));
-
+  const remain=cropPercent;
+  const cut=(1-remain)/2;
+  const y1=Math.floor(c1.height*cut);
+  const y2=Math.floor(c1.height*(1-cut));
   ctx.beginPath();
-  ctx.strokeStyle = "red";
-  ctx.lineWidth = 3;
+  ctx.strokeStyle="red";
+  ctx.lineWidth=3;
   ctx.moveTo(0,y1);
   ctx.lineTo(c1.width,y1);
   ctx.moveTo(0,y2);
   ctx.lineTo(c1.width,y2);
   ctx.stroke();
-
-  ctx.fillStyle = "rgba(255,0,0,0.8)";
-  ctx.font = "16px sans-serif";
-  ctx.fillText(`เหลือพื้นที่กลาง ${Math.round(remain*100)}%`,10,Math.max(20,y1-10));
-  output.textContent = `📏 Crop ด้านบน ${(cut*100).toFixed(1)}% และด้านล่าง ${(cut*100).toFixed(1)}% เหลือภาพกลาง ${(remain*100).toFixed(0)}%`;
+  ctx.fillStyle="rgba(255,0,0,0.8)";
+  ctx.font="16px sans-serif";
+  ctx.fillText(`พื้นที่ OCR กลาง ${Math.round(remain*100)}%`,10,Math.max(20,y1-10));
+  output.textContent=`📷 แสดงภาพจากกล้องเรียบร้อย — เหลือภาพกลาง ${(remain*100).toFixed(0)}%`;
 }
 
 // 🧩 OCR
 async function runOCR(mat,label="full"){
-  const temp = document.createElement("canvas");
-  temp.width=mat.cols; temp.height=mat.rows;
+  const temp=document.createElement("canvas");
+  temp.width=mat.cols;temp.height=mat.rows;
   cv.imshow(temp,mat);
   await new Promise(r=>setTimeout(r,10));
-  const { data } = await Tesseract.recognize(temp,'eng',{tessedit_char_whitelist:'0123456789'});
+  const {data}=await Tesseract.recognize(temp,'eng',{tessedit_char_whitelist:'0123456789'});
   const txt=data.text.replace(/\s+/g,'');
   const m=txt.match(/\d{13}/);
-  if(!m) return {cid:null,raw:txt,zone:label};
+  if(!m)return{cid:null,raw:txt,zone:label};
   let cid=m[0];
-  if(!validateThaiID(cid)){const fix=autoFixThaiIDByChecksum(cid);if(fix) cid=fix;}
-  return {cid:validateThaiID(cid)?cid:null,raw:txt,zone:label};
+  if(!validateThaiID(cid)){const fix=autoFixThaiIDByChecksum(cid);if(fix)cid=fix;}
+  return{cid:validateThaiID(cid)?cid:null,raw:txt,zone:label};
 }
 
 async function processImage(mat,maxW,angle){
   let gray=new cv.Mat();
   cv.cvtColor(mat,gray,cv.COLOR_RGBA2GRAY);
-  const { claheClip, sharpWeight, blurWeight, normMin, normMax }=autoContrastLevel(gray);
+  const {claheClip,sharpWeight,blurWeight,normMin,normMax}=autoContrastLevel(gray);
   const clahe=new cv.CLAHE(claheClip,new cv.Size(8,8));
-  const cl=new cv.Mat(); clahe.apply(gray,cl);
-  const blur=new cv.Mat(); cv.GaussianBlur(cl,blur,new cv.Size(0,0),1.0);
-  const sharp=new cv.Mat(); cv.addWeighted(cl,sharpWeight,blur,blurWeight,0,sharp);
-  const denoise=new cv.Mat(); cv.bilateralFilter(sharp,denoise,5,30,30);
+  const cl=new cv.Mat();clahe.apply(gray,cl);
+  const blur=new cv.Mat();cv.GaussianBlur(cl,blur,new cv.Size(0,0),1.0);
+  const sharp=new cv.Mat();cv.addWeighted(cl,sharpWeight,blur,blurWeight,0,sharp);
+  const denoise=new cv.Mat();cv.bilateralFilter(sharp,denoise,5,30,30);
   cv.normalize(denoise,denoise,normMin,normMax,cv.NORM_MINMAX);
-  const bin=new cv.Mat(); cv.adaptiveThreshold(denoise,bin,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,35,10);
-  const up=new cv.Mat(); cv.resize(bin,up,new cv.Size(0,0),1.5,1.5,cv.INTER_CUBIC);
+  const bin=new cv.Mat();cv.adaptiveThreshold(denoise,bin,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,35,10);
+  const up=new cv.Mat();cv.resize(bin,up,new cv.Size(0,0),1.5,1.5,cv.INTER_CUBIC);
   cv.imshow(c2,up);
   const res=await runOCR(up,"center-zone");
   gray.delete();clahe.delete();cl.delete();blur.delete();sharp.delete();denoise.delete();bin.delete();up.delete();
-  return {...res,maxW,angle};
+  return{...res,maxW,angle};
 }
 
-// 📦 โหลดภาพ
+// 📷 ถ่ายใหม่ = เปิดกล้องอีกครั้ง
+takePhotoBtn.addEventListener("click", ()=>{
+  // ล้างผลลัพธ์และ canvas ทั้งหมด
+  output.textContent = "📷 พร้อมถ่ายภาพใหม่...";
+  const ctx1=c1.getContext("2d");
+  const ctx2=c2.getContext("2d");
+  ctx1.clearRect(0,0,c1.width,c1.height);
+  ctx2.clearRect(0,0,c2.width,c2.height);
+  if(srcMat){srcMat.delete();srcMat=null;}
+  // เปิดกล้องใหม่
+  fileInput.value = "";
+  fileInput.click();
+});
+
+// 📦 โหลดภาพจากกล้อง
 fileInput.addEventListener("change", e=>{
-  const f=e.target.files[0]; if(!f)return;
+  const f=e.target.files[0];if(!f)return;
   const img=new Image();
   img.src=URL.createObjectURL(f);
   img.onload=()=>{
     const fileSizeMB=f.size/1024/1024;
-    let maxW=img.width; if(fileSizeMB>2)maxW=1280;
+    let maxW=img.width;if(fileSizeMB>2)maxW=1280;
     const scale=img.width>maxW?maxW/img.width:1;
-    c1.width=img.width*scale; c1.height=img.height*scale;
+    c1.width=img.width*scale;c1.height=img.height*scale;
     const ctx=c1.getContext("2d");
     ctx.drawImage(img,0,0,c1.width,c1.height);
     if(srcMat)srcMat.delete();
     srcMat=cv.imread(c1);
-    drawCropGuides();
+    drawCropGuides(); // ✅ แสดงภาพพร้อมเส้น crop แต่ยังไม่ OCR
   };
 });
 
-// 🔄 หมุนภาพ
-document.getElementById("rotateLeft").onclick=()=>rotate(-90);
-document.getElementById("rotateRight").onclick=()=>rotate(90);
-function rotate(deg){
+// 🔄 หมุนซ้าย
+rotateLeftBtn.onclick=()=>{
   if(!srcMat)return;
   const rot=new cv.Mat();
-  if(deg===90)cv.rotate(srcMat,rot,cv.ROTATE_90_CLOCKWISE);
-  else cv.rotate(srcMat,rot,cv.ROTATE_90_COUNTERCLOCKWISE);
+  cv.rotate(srcMat,rot,cv.ROTATE_90_COUNTERCLOCKWISE);
   srcMat.delete();
   srcMat=rot;
   cv.imshow(c1,srcMat);
   drawCropGuides();
-}
+};
 
 // 🔁 เปลี่ยนเปอร์เซ็นต์แล้ววาดเส้นทันที
 cropSelect.addEventListener("change", ()=>{
-  cropPercent = parseInt(cropSelect.value)/100;
+  cropPercent=parseInt(cropSelect.value)/100;
   drawCropGuides();
 });
 
-// 🧠 เริ่ม OCR
-startBtn.onclick = async ()=>{
+// 🧠 กดปุ่มเริ่ม OCR
+startBtn.onclick=async()=>{
   if(!srcMat){output.textContent="❌ ยังไม่มีภาพ";return;}
   output.textContent="⏳ เริ่ม OCR ...\n";
-
-  const remain = cropPercent;
-  const cut = (1 - remain) / 2;
-  const y1 = Math.floor(srcMat.rows * cut);
-  const y2 = Math.floor(srcMat.rows * (1 - cut));
-  const cropHeight = y2 - y1;
-
-  const cropRect = new cv.Rect(0, y1, srcMat.cols, cropHeight);
-  const cropped = srcMat.roi(cropRect).clone();
-
+  const remain=cropPercent;
+  const cut=(1-remain)/2;
+  const y1=Math.floor(srcMat.rows*cut);
+  const y2=Math.floor(srcMat.rows*(1-cut));
+  const cropHeight=y2-y1;
+  const cropRect=new cv.Rect(0,y1,srcMat.cols,cropHeight);
+  const cropped=srcMat.roi(cropRect).clone();
   const resolutions=[800,960,1280];
   const aspect=cropped.cols/cropped.rows;
   const angles=(aspect>1.2)?[0]:[0,270,180,90];
@@ -212,7 +221,7 @@ startBtn.onclick = async ()=>{
   for(const maxW of resolutions){
     output.textContent+=`\n=== 🔍 ทดลองขนาด maxW=${maxW} ===\n`;
     const scale=cropped.cols>maxW?maxW/cropped.cols:1;
-    const resized=new cv.Mat(); cv.resize(cropped,resized,new cv.Size(0,0),scale,scale,cv.INTER_AREA);
+    const resized=new cv.Mat();cv.resize(cropped,resized,new cv.Size(0,0),scale,scale,cv.INTER_AREA);
     let found=false;
     for(const a of angles){
       if(found)break;
