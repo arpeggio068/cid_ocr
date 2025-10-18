@@ -16,6 +16,7 @@
   button { background:#007bff; color:#fff; border:none; cursor:pointer; }
   button:hover { background:#0056b3; }
   select { border:1px solid #ccc; }
+  .cv-hide {display:none}
 </style>
 </head>
 <body>
@@ -25,16 +26,16 @@
 <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none">
 
 <div id="btns">
-  <button id="takePhoto">📷 ถ่ายใหม่</button>
-  <label for="cropSelect">เลือกระดับการตัดขอบ (เหลือพื้นที่ตรงกลาง): </label>
+  <button id="takePhoto">📷</button>
+  <label for="cropSelect">การตัดขอบ</label>
   <select id="cropSelect">
-    <option value="100">100% (เต็มภาพ)</option>
+    <option value="100">ภาพเต็ม</option>
     <option value="90" selected>90%</option>
     <option value="85">85%</option>
     <option value="80">80%</option>
   </select>
-  <button id="rotateLeft">↩️ หมุนซ้าย</button>
-  <button id="startOCR">🔍 เริ่ม OCR</button>
+  <button id="rotateLeft">↩️</button>
+  <button id="startOCR">🔍 OCR</button>
 </div>
 
 <pre id="output"></pre>
@@ -42,9 +43,9 @@
 <div id="canvases">
   <div>
     <canvas id="cvCanvas1"></canvas>
-    <div class="label">ภาพจากกล้อง</div>
+    <div class="label cv-hide">ภาพจากกล้อง</div>
   </div>
-  <div>
+  <div class="cv-hide">
     <canvas id="cvCanvas2"></canvas>
     <div class="label">ภาพที่ใช้ OCR</div>
   </div>
@@ -118,7 +119,8 @@ function drawCropGuides(){
   ctx.fillStyle="rgba(255,0,0,0.8)";
   ctx.font="16px sans-serif";
   ctx.fillText(`พื้นที่ OCR กลาง ${Math.round(remain*100)}%`,10,Math.max(20,y1-10));
-  output.textContent=`📷 แสดงภาพจากกล้องเรียบร้อย — เหลือภาพกลาง ${(remain*100).toFixed(0)}%`;
+  //output.textContent=`📷 แสดงภาพจากกล้องเรียบร้อย — เหลือภาพกลาง ${(remain*100).toFixed(0)}%`;
+  console.log(`📷 แสดงภาพจากกล้องเรียบร้อย — เหลือภาพกลาง ${(remain*100).toFixed(0)}%`)
 }
 
 // 🧩 OCR
@@ -136,28 +138,66 @@ async function runOCR(mat,label="full"){
   return{cid:validateThaiID(cid)?cid:null,raw:txt,zone:label};
 }
 
-async function processImage(mat,maxW,angle){
-  let gray=new cv.Mat();
-  cv.cvtColor(mat,gray,cv.COLOR_RGBA2GRAY);
-  const {claheClip,sharpWeight,blurWeight,normMin,normMax}=autoContrastLevel(gray);
-  const clahe=new cv.CLAHE(claheClip,new cv.Size(8,8));
-  const cl=new cv.Mat();clahe.apply(gray,cl);
-  const blur=new cv.Mat();cv.GaussianBlur(cl,blur,new cv.Size(0,0),1.0);
-  const sharp=new cv.Mat();cv.addWeighted(cl,sharpWeight,blur,blurWeight,0,sharp);
-  const denoise=new cv.Mat();cv.bilateralFilter(sharp,denoise,5,30,30);
-  cv.normalize(denoise,denoise,normMin,normMax,cv.NORM_MINMAX);
-  const bin=new cv.Mat();cv.adaptiveThreshold(denoise,bin,255,cv.ADAPTIVE_THRESH_GAUSSIAN_C,cv.THRESH_BINARY,35,10);
-  const up=new cv.Mat();cv.resize(bin,up,new cv.Size(0,0),1.5,1.5,cv.INTER_CUBIC);
-  cv.imshow(c2,up);
-  const res=await runOCR(up,"center-zone");
-  gray.delete();clahe.delete();cl.delete();blur.delete();sharp.delete();denoise.delete();bin.delete();up.delete();
-  return{...res,maxW,angle};
+// 🧩 OCR CID จากภาพ (รวม zone บน + full zone ในฟังก์ชันเดียว)
+async function processImage(mat, maxW, angle) {
+  // ====================== เตรียมภาพพื้นฐาน ======================
+  let gray = new cv.Mat();
+  cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY);
+  const { claheClip, sharpWeight, blurWeight, normMin, normMax } = autoContrastLevel(gray);
+  const clahe = new cv.CLAHE(claheClip, new cv.Size(8, 8));
+  const cl = new cv.Mat();
+  clahe.apply(gray, cl);
+  const blur = new cv.Mat();
+  cv.GaussianBlur(cl, blur, new cv.Size(0, 0), 1.0);
+  const sharp = new cv.Mat();
+  cv.addWeighted(cl, sharpWeight, blur, blurWeight, 0, sharp);
+  const denoise = new cv.Mat();
+  cv.bilateralFilter(sharp, denoise, 5, 30, 30);
+  cv.normalize(denoise, denoise, normMin, normMax, cv.NORM_MINMAX);
+
+  // ====================== แบ่ง zone OCR ======================
+  const h = denoise.rows, w = denoise.cols;
+  const topH = Math.floor(h * 0.55); // กรอบบนครอบถึงเลขบัตร
+  const topZone = denoise.roi(new cv.Rect(0, 0, w, topH)).clone();
+  const fullZone = denoise.clone();
+
+  // ====================== 1️⃣ OCR zone บนก่อน ======================
+  const binTop = new cv.Mat();
+  cv.adaptiveThreshold(topZone, binTop, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 35, 10);
+  const upTop = new cv.Mat();
+  cv.resize(binTop, upTop, new cv.Size(0, 0), 1.5, 1.5, cv.INTER_CUBIC);
+  const resTop = await runOCR(upTop, "top-zone");
+
+  if (resTop.cid) {
+    cv.imshow(c2, upTop); // แสดงภาพ zone ที่ใช้ OCR
+    gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete();
+    denoise.delete(); binTop.delete(); upTop.delete(); topZone.delete(); fullZone.delete();
+    return { ...resTop, maxW, angle }; // ✅ เจอใน zone บน → return ทันที
+  }
+
+  // ====================== 2️⃣ ถ้าไม่เจอ → OCR full zone ต่อ ======================
+  const binFull = new cv.Mat();
+  cv.adaptiveThreshold(fullZone, binFull, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 35, 10);
+  const upFull = new cv.Mat();
+  cv.resize(binFull, upFull, new cv.Size(0, 0), 1.5, 1.5, cv.INTER_CUBIC);
+  const resFull = await runOCR(upFull, "full-zone");
+
+  // แสดงภาพสุดท้ายที่ OCR ใช้
+  cv.imshow(c2, upFull);
+
+  // ล้างหน่วยความจำ
+  gray.delete(); clahe.delete(); cl.delete(); blur.delete(); sharp.delete();
+  denoise.delete(); binTop.delete(); upTop.delete(); topZone.delete();
+  binFull.delete(); upFull.delete(); fullZone.delete();
+
+  // ✅ ส่งกลับผลจาก full-zone
+  return { ...resFull, maxW, angle };
 }
 
 // 📷 ถ่ายใหม่ = เปิดกล้องอีกครั้ง
 takePhotoBtn.addEventListener("click", ()=>{
   // ล้างผลลัพธ์และ canvas ทั้งหมด
-  output.textContent = "📷 พร้อมถ่ายภาพใหม่...";
+  //output.textContent = "📷 พร้อมถ่ายภาพใหม่...";
   const ctx1=c1.getContext("2d");
   const ctx2=c2.getContext("2d");
   ctx1.clearRect(0,0,c1.width,c1.height);
@@ -219,7 +259,8 @@ startBtn.onclick=async()=>{
   const angles=(aspect>1.2)?[0]:[0,270,180,90];
   let results=[];
   for(const maxW of resolutions){
-    output.textContent+=`\n=== 🔍 ทดลองขนาด maxW=${maxW} ===\n`;
+    //output.textContent+=`\n=== 🔍 ทดลองขนาด maxW=${maxW} ===\n`;
+    console.log(`\n=== 🔍 ทดลองขนาด maxW=${maxW} ===\n`)
     const scale=cropped.cols>maxW?maxW/cropped.cols:1;
     const resized=new cv.Mat();cv.resize(cropped,resized,new cv.Size(0,0),scale,scale,cv.INTER_AREA);
     let found=false;
@@ -232,7 +273,12 @@ startBtn.onclick=async()=>{
       else if(a===270)cv.rotate(resized,rot,cv.ROTATE_90_COUNTERCLOCKWISE);
       const res=await processImage(rot,maxW,a);
       results.push(res);
-      if(res.cid){found=true;output.textContent+=`✅ พบเลข ${res.cid} ที่ maxW=${maxW}, angle=${a}°\n`;break;}
+      if(res.cid){
+        found=true;
+        //output.textContent+=`✅ พบเลข ${res.cid} ที่ maxW=${maxW}, angle=${a}°\n`;
+        console.log(`✅ พบเลข ${res.cid} ที่ maxW=${maxW}, angle=${a}°\n`);
+        break;
+      }
       rot.delete();
     }
     resized.delete();
