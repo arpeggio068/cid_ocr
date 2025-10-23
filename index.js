@@ -111,6 +111,8 @@ takePhotoBtn.addEventListener("click", ()=>{
 
 fileInput.addEventListener("change", e=>{
   const f=e.target.files[0];if(!f)return;
+  document.getElementById('cvCanvas1').classList.remove("cv-hide")
+  document.getElementById('ocr-adjust').classList.remove("cv-hide")
   const img=new Image();
   img.src=URL.createObjectURL(f);
   img.onload=()=>{
@@ -243,12 +245,19 @@ startBtn.onclick=async()=>{
     //output.textContent=`✅ พบเลข ${found.cid} จาก zone ${found.zone}, มุม ${found.angle}°`;
     //console.log(`🎯 OCR Result: ${found.cid}`);
   }else{
-    output.textContent=`❌ ไม่พบเลขบัตรในทุกขนาด`;
-    console.warn("❌ ไม่พบเลขบัตรในทุกขนาด");
+    output.textContent=`❌ ไม่พบเลขบัตร`;
+    console.warn("❌ ไม่พบเลขบัตร");
   }
 };
 
 function chooseCid(i){
   const cid = document.getElementById('ocrcid'+i).value
+  const cvs = document.querySelectorAll("canvas");
+  cvs.forEach(cv => {
+    cv.width = cv.width;
+    cv.classList.add("cv-hide")
+  });
+  document.getElementById('ocr-adjust').classList.add("cv-hide")
+  document.getElementById('cid').value = cid
   console.log("chooseCid: ",cid)
 }

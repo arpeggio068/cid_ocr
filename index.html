@@ -24,9 +24,11 @@
 
 <div class="row my-2">
   <div class="col">
+    <input class="form-control" type="number" id="cid" placeholder="CID">
     <input type="file" id="fileInput" accept="image/*" capture="environment" style="display:none">
     <div id="btns">
       <button class="ocr-element" id="takePhoto">📷</button>
+      <span id="ocr-adjust" class="cv-hide">
       <label for="cropSelect">ตัดขอบ</label>
       <select class="ocr-element" id="cropSelect">
         <option value="100">ภาพเต็ม</option>
@@ -36,6 +38,7 @@
       </select>
       <button class="ocr-element" id="rotateLeft">↩️</button>
       <button class="ocr-element" id="startOCR">🔍 OCR</button>
+      </span>
     </div>
     
     <!-- ✅ Progress bar -->
@@ -47,7 +50,7 @@
     
      <div id="canvases">
       <div>
-        <canvas id="cvCanvas1"></canvas>        
+        <canvas class="cv-hide" id="cvCanvas1"></canvas>        
       </div>
       <div class="cv-hide">
         <canvas id="cvCanvas2"></canvas>
