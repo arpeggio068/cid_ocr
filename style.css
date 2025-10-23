@@ -1,0 +1,104 @@
+ body { font-family: sans-serif; }
+  canvas { margin: 5px; border: 1px solid #ccc; max-width: 45%; height: auto; }
+  #canvases { display: flex; flex-wrap: wrap; justify-content: start; align-items: start; }
+  .label { text-align: center; font-size: 14px; margin: 4px 0; }
+  #btns { margin:10px 0; }
+ .ocr-element { 
+    margin-right: 6px;        
+    padding: 4px 9px;         
+   border-radius: 4px;       
+   font-size: 0.85rem;        
+  }
+
+  .ocr-element { 
+    background:#007bff; 
+    color:#fff; 
+    border:none; 
+    cursor:pointer; 
+  }
+ .ocr-element:hover { background:#0056b3; }
+  select { border:1px solid #ccc; }
+  .cv-hide {display:none}
+
+  /* ✅ Progress bar with smooth red→yellow→green transition */
+  #progress-container {
+    width: 100%;
+    max-width: 400px;
+    background-color: #eee;
+    border-radius: 10px;
+    margin-top: 15px;
+    height: 26px;
+    overflow: hidden;
+    display: none;
+    position: relative;
+  }
+  #progress-bar {
+    height: 100%;
+    width: 0%;
+    background-color: red;
+    transition: width 0.4s ease, background-color 0.4s linear;
+    border-radius: 10px;
+  }
+
+  /* 🔹 กล่องรวมผล OCR */
+#ocr-select {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); /* 2 คอลัมน์บนจอปกติ */
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 400px; /* จำกัดความกว้างรวม */
+}
+
+/* 🔹 ปุ่มข้อความแต่ละอัน (จาก <p>) */
+.clickable {
+  display: inline-block;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background-color: #f8f8f8;
+  color: #333;
+  cursor: pointer;
+  transition: background 0.25s, transform 0.15s;
+  font-size: 13px;
+  font-weight: 500;
+  user-select: none;
+  line-height: 1.4;
+  text-align: center;
+  border: 1px solid #ddd;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+.clickable:hover {
+  background-color: #f0f0f0;
+  transform: scale(1.03);
+}
+
+/* 🔹 กระพริบสำหรับ recommend */
+.blink .label {
+  animation: blinkGlow 1.2s infinite ease-in-out;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+/* 🔹 ดาวกระพริบ */
+.star {
+  color: gold;
+  text-shadow: 0 0 8px #ffcc33, 0 0 15px #ffaa00;
+  animation: starTwinkle 1.5s infinite ease-in-out;
+  margin-left: 3px;
+  font-size: 13px;
+}
+
+@keyframes blinkGlow {
+  0%, 100% {
+    color: #ff4444;
+    text-shadow: 0 0 5px #ff8888, 0 0 10px #ffcc66;
+  }
+  50% {
+    color: #ffaa00;
+    text-shadow: 0 0 8px #ffee66, 0 0 16px #ffee99;
+  }
+}
+
+@keyframes starTwinkle {
+  0%, 100% { opacity: 0.7; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
